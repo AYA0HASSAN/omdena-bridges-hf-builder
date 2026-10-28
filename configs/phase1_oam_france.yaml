@@ -1,0 +1,51 @@
+# Phase 1 build: OAM + OSM (Global South first) and France (BD ORTHO + BD TOPO).
+# Regions below are STARTING POINTS. Run `discover` (notebook step 2) on your areas of interest and
+# replace/add regions where OAM images actually contain many OSM bridges.
+
+hub:
+  repo_id: YOUR_HF_USER/fair-bridges-chips      # or set env BB_REPO_ID; created private if missing
+  private: true                                 # keep private until licences and test regions are checked
+  revision: main
+  pretty_name: fAIr Bridges training chips (phase 1)
+  # local_dir: bb_local_hub                     # uncomment for a dry run without the Hub
+
+work_dir: bb_work                               # scratch; shards are deleted after each upload
+
+build:
+  cell_deg: 0.04            # ~4.4 km cells: one cell in memory at a time
+  label_margin_m: 300       # labels fetched a bit beyond the cell so edge chips see whole bridges
+  shard_size: 500           # chips per Parquet shard (~40-80 MB) = one Hub commit
+  state_every_cells: 25     # save progress even when cells produce no chips
+  max_hours: 11             # stop cleanly before Kaggle/Colab kills the session
+
+chips:
+  min_valid: 0.9            # >= 90 % of the chip must be real imagery (no nodata edge)
+  max_pos_per_cell: 400
+  neg_ratio: 1.0            # ~1 empty chip per bridge chip (doc 04 §6); lower at export with --neg-keep
+  hard_negative_share: 0.5  # half of negatives on water/roads without bridges
+
+sources:
+  oam_osm:
+    enabled: true
+    max_gsd_m: 0.6          # z18 chip is ~0.6 m/px at the equator; coarser imagery is upsampled -> refused
+    images_per_cell: 2
+    allowed_licences: ["CC-BY 4.0", "CC-BY-SA 4.0", "CC BY 4.0", "CC0", "Public Domain"]   # *-NC always refused
+    regions:
+      - {name: kathmandu,     bbox: [85.28, 27.66, 85.36, 27.74],   country: NP, global_south: true}
+      - {name: dar_es_salaam, bbox: [39.20, -6.86, 39.30, -6.76],   country: TZ, global_south: true}
+      - {name: manila,        bbox: [120.96, 14.56, 121.04, 14.64], country: PH, global_south: true}
+  france:
+    enabled: true
+    line_width_m: 6.0       # BD TOPO bridge lines without a surface get a 6 m deck (footbridges 3 m)
+    native_res_m: 0.20
+    osm_context: true       # OSM water/roads for hard negatives
+    regions:
+      - {name: lyon,       bbox: [4.78, 45.72, 4.90, 45.80], country: FR, global_south: false}
+      - {name: strasbourg, bbox: [7.70, 48.54, 7.80, 48.62], country: FR, global_south: false}
+
+split:
+  test_regions:             # whole regions held out as test; fix these BEFORE training and never move them
+    - {source: oam_osm, region: dar_es_salaam}
+  val_fraction: 0.2         # share of z14 blocks (~2.4 km) going to validation
+  buffer_chips: 1           # chips within 1 chip (~150 m) of another split are dropped
+  phash_max: 4              # near-duplicate threshold (Hamming bits of 64)

@@ -1,0 +1,14 @@
+# never commit imagery or built data (ticket: no large or rights-restricted imagery in git)
+bb_work/
+bb_local_hub/
+yolo/
+*.parquet
+*.tif
+*.tiff
+*.png
+*.jpg
+!docs/**/*.png
+candidates.csv
+__pycache__/
+.ipynb_checkpoints/
+.env
