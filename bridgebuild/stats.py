@@ -99,6 +99,9 @@ def overlays(cfg, n=24, out=None, seed=0):
         if len(rows) >= n:
             break
     rows = [rows[i] for i in rng.permutation(len(rows))[:n]]
+    if not rows:
+        print("no positive chips to overlay yet")
+        return
     cols = 6
     fig, axs = plt.subplots(int(np.ceil(len(rows) / cols)), cols, figsize=(cols * 2.6, np.ceil(len(rows) / cols) * 2.8), squeeze=False)
     for ax in axs.flat:
