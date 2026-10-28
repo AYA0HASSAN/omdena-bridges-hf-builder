@@ -166,7 +166,9 @@ RAIL_WIDTH_M = 6
 
 def way_width(row):
     try:
-        return float(str(row.get("width")).replace("m", "").strip())
+        val = float(str(row.get("width")).replace("m", "").strip())
+        if math.isfinite(val) and val > 0:
+            return val
     except (TypeError, ValueError):
         pass
     if row.get("railway"):
