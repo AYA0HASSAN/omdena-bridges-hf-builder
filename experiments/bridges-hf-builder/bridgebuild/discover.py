@@ -2,6 +2,8 @@
 OSM bridges sit inside each one (Overpass `out count`, cheap). Use the result to pick `regions:` so
 the build spends its time on imagery that actually has bridges.
 """
+import time
+
 import pandas as pd
 from shapely.geometry import box
 
@@ -20,7 +22,8 @@ def count_osm_bridges(bbox):
         return 0
 
 
-def discover(search_bbox, max_gsd_m=0.6, allowed=("CC-BY 4.0", "CC-BY-SA 4.0", "CC0"), max_images=60, out_csv=None):
+def discover(search_bbox, max_gsd_m=0.6, allowed=("CC-BY 4.0", "CC-BY-SA 4.0", "CC0"), max_images=60, out_csv=None,
+             pause_s=1.5):
     imgs = oam_images(search_bbox, max_gsd_m, list(allowed), max_pages=10)
     rows = []
     for im in imgs[:max_images]:
@@ -36,6 +39,7 @@ def discover(search_bbox, max_gsd_m=0.6, allowed=("CC-BY 4.0", "CC-BY-SA 4.0", "
                 n = count_osm_bridges(b)
             except Exception as e:
                 print("  count failed:", str(e)[:80]); n = None
+            time.sleep(pause_s)                           # be nice to the free Overpass mirrors
         rows.append({"image_id": im["image_id"], "title": im["title"], "provider": im["provider"], "licence": im["licence"],
                      "gsd_m": im["gsd"], "date": im["date"], "bbox": [round(v, 5) for v in b], "area_km2": round(area_km2, 1),
                      "osm_bridges": n, "url": im["url"]})
