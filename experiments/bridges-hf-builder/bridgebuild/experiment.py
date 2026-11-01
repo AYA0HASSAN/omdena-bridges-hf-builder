@@ -148,7 +148,9 @@ def spatial_split(ch, br, test_cities, val_fraction=None, buffer_chips=1, phash_
     cfg = {"split": {"test_regions": regs.to_dict("records"), "val_fraction": val_fraction,
                      "buffer_chips": buffer_chips, "phash_max": phash_max}}
     s = assign_split(ch, br, cfg)
-    s = s.merge(ch[["chip_id", "image_id", "stem", "city", "obb_yolo"]], on=["chip_id", "image_id"], how="left")
+    # join on the row index (assign_split keeps ch's index): a merge on chip_id/image_id would duplicate rows when the
+    # same tile from the same image was cut twice (overlapping regions) and break "every chip in one split"
+    s = s.join(ch[["stem", "city", "obb_yolo"]])
     leak = leakage_tests(s, cfg)
     return s, leak, cfg
 
