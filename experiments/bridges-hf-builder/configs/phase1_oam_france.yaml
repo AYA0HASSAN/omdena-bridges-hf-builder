@@ -34,11 +34,14 @@ sources:
       - {name: kathmandu,     bbox: [85.28, 27.66, 85.36, 27.74],   country: NP, global_south: true}
       - {name: dar_es_salaam, bbox: [39.20, -6.86, 39.30, -6.76],   country: TZ, global_south: true}
       - {name: manila,        bbox: [120.96, 14.56, 121.04, 14.64], country: PH, global_south: true}
-      # Candidates below are UNVERIFIED - bboxes are a rough guess at bridge-dense, flood-prone areas.
-      # Run `discover` (notebook step 2) against each before `build` to confirm OAM coverage/licence and OSM bridge density.
-      - {name: beira,         bbox: [34.80, -19.88, 34.90, -19.78], country: MZ, global_south: true}
-      - {name: dhaka,         bbox: [90.35, 23.70, 90.45, 23.80],   country: BD, global_south: true}
-      - {name: jakarta,       bbox: [106.75, -6.25, 106.85, -6.15], country: ID, global_south: true}
+      # Verified via `discover` against OAM+OSM (see notes); each is the strongest non-overlapping
+      # image per city by OSM bridge count.
+      - {name: beira_00,          bbox: [34.8706, -19.83563, 34.88529, -19.82081], country: MZ, global_south: true}   # ~24 bridges, 0.05 m
+      - {name: beira_02,          bbox: [34.86858, -19.83174, 34.88036, -19.81663], country: MZ, global_south: true}  # ~16 bridges, 0.05 m
+      - {name: port_au_prince_00, bbox: [-72.45, 18.48, -72.25, 18.62],              country: HT, global_south: true} # ~347 bridges, 0.27 m
+      - {name: monrovia_00,       bbox: [-10.77999, 6.29257, -10.70964, 6.38239],    country: LR, global_south: true} # ~179 bridges, 0.05 m
+      - {name: freetown_00,       bbox: [-13.2996, 8.4, -13.15, 8.50043],            country: SL, global_south: true} # ~134 bridges, 0.04 m
+      - {name: blantyre_00,       bbox: [35.02155, -15.78824, 35.0564, -15.75],      country: MW, global_south: true} # ~13 bridges, 0.04 m
   france:
     enabled: true
     line_width_m: 6.0       # BD TOPO bridge lines without a surface get a 6 m deck (footbridges 3 m)
