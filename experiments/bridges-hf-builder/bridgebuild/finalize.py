@@ -60,7 +60,9 @@ def assign_split(ch, br, cfg):
     is_test = s.apply(lambda r: (r["source"], r["region"]) in tests, axis=1)
     s.loc[live & is_test, ["split", "reason"]] = ["test", "test region"]
     rest = live & ~is_test
-    s.loc[rest, "split"] = ["val" if _frac(b) < val_frac else "train" for b in s.loc[rest, "block_z14"]]
+    vf = (lambda src: val_frac.get(src, val_frac.get("default", 0.2))) if isinstance(val_frac, dict) else (lambda src: val_frac)
+    s.loc[rest, "split"] = ["val" if _frac(b) < vf(src) else "train"          # val_fraction: number or {source: number}
+                            for b, src in zip(s.loc[rest, "block_z14"], s.loc[rest, "source"])]
     s.loc[rest, "reason"] = "z14 block hash"
     # 3. bridge grouping: chips follow the bridge's home block (block of its centroid)
     if len(br):
