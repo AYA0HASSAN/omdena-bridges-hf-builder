@@ -54,6 +54,8 @@ def discover(search_bbox, max_gsd_m=0.6, allowed=("CC-BY 4.0", "CC-BY-SA 4.0", "
 
 def as_regions(df, prefix, top=10, min_bridges=5, country=None, global_south=None):
     """Turn the best rows into `regions:` entries for the config (YAML-ready dicts)."""
+    if df.empty or "osm_bridges" not in df.columns:      # no OAM images matched this search bbox at all
+        return []
     d = df[df["osm_bridges"].fillna(0) >= min_bridges].head(top)
     return [{"name": f"{prefix}_{i:02d}", "bbox": list(r.bbox), "country": country, "global_south": global_south,
              "note": f"OAM {r.image_id} ({r.provider}, {r.gsd_m:.2f} m), ~{int(r.osm_bridges)} OSM bridges"}
