@@ -38,7 +38,7 @@ def serve(model_path: str, chips_dir: str, out: str, conf: float, iou: float, ba
         chunk = files[i : i + batch]
         images = [Image.open(f).convert("RGB") for f in chunk]
         native_sizes = [im.size for im in images]  # (w, h)
-        chips = np.stack([np.array(im.resize((imgsz, imgsz))) for im in images])
+        chips = np.stack([np.array(im.resize((imgsz, imgsz), Image.Resampling.BILINEAR)) for im in images])
         for f, (w, h), result in zip(chunk, native_sizes, detector.predict(chips, conf=conf, iou=iou)):
             xyz = parse_oam_name(f.name)
             if xyz is None:

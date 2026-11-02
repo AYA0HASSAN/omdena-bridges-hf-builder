@@ -26,7 +26,9 @@ def run(model_path: str, images_dir: str, labels_dir: str, imgsz: int, batch: in
     preds: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for i in range(0, len(files), batch):
         chunk = files[i : i + batch]
-        chips = np.stack([np.array(Image.open(f).convert("RGB").resize((imgsz, imgsz))) for f in chunk])
+        chips = np.stack(
+            [np.array(Image.open(f).convert("RGB").resize((imgsz, imgsz), Image.Resampling.BILINEAR)) for f in chunk]
+        )
         for f, d in zip(chunk, detector.predict(chips, conf=0.001)):
             preds[f.stem] = (d.corners, d.scores)
 
