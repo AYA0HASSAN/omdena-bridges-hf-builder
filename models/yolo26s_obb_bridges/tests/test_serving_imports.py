@@ -8,8 +8,14 @@ ultralytics, torch and zenml completely unavailable, since none of those are ins
 `@step`/`@pipeline` decorators (fair/utils/model_validator.py's AST check requires those decorators to
 live in that exact file), so it can never be zenml-free - that's documented, not a bug. It still must
 import fine with ultralytics/torch blocked, since those stay inside function bodies.
+
+Every subprocess here sets `FAIR_SKIP_ZENML_PATCH=1` (same as the inference image's Dockerfile ENV):
+without it, fair-py-ops's own `fair_zenml_patch.pth` imports zenml at interpreter startup regardless of
+what any script imports (see the Dockerfile's `inference` stage comment), which would make the zenml
+checks below fail for a reason that has nothing to do with `serving.py` itself.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,8 +42,9 @@ print("import ok")
 
 def _run_blocked(module: str, blocked: set[str]) -> subprocess.CompletedProcess:
     script = _SCRIPT.format(blocked=blocked, module=module)
+    env = {**os.environ, "FAIR_SKIP_ZENML_PATCH": "1"}
     return subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, cwd=str(REPO_ROOT)
+        [sys.executable, "-c", script], capture_output=True, text=True, cwd=str(REPO_ROOT), env=env
     )
 
 
