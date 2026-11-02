@@ -38,12 +38,15 @@ plus a France BD ORTHO/BD TOPO set used for domain adaptation, built by the `bri
 
 ## Limitations
 
-- **Unverified ONNX output layout.** `postprocess` assumes the standard Ultralytics OBB export: one tensor
-  shaped `(1, 6, N)` for this one-class model (box already decoded to real pixel coordinates, class score
-  post-sigmoid, angle in radians). This has **not** been confirmed against a real exported `yolo26s-obb`
-  ONNX graph. Before trusting production predictions, export a trained model, inspect
-  `session.get_outputs()[0].shape`, and adjust `postprocess`/`predict` if the layout differs (angle
-  convention, channel order, or a built-in NMS head).
+- **ONNX output layout - confirmed.** `postprocess` (now in `obb_utils.py`, shared with `pipeline/`) reads
+  one tensor shaped `(1, 4 + nc + 1, N)`: 4 box channels already decoded to real input-pixel `cx, cy, w, h`,
+  `nc` class scores (post-sigmoid), and 1 angle channel (radians, last) - no NMS baked in, so `postprocess`
+  always runs its own confidence filter + rotated NMS. For this one-class model, `nc=1` so the shape is
+  `(1, 6, N)`. Confirmed two ways: against `yolo26n-obb.yaml` (nc=80, random weights -> `(1, 85, 5376)`) and
+  `yolo26n-obb.pt` (DOTA, nc=15 -> `(1, 20, 5376)`) at imgsz=512/opset=17/ultralytics 8.4.197; and directly
+  against the real exported `bridges-v0.onnx` (`output0`: `(batch, 6, anchors)`, no `NonMaxSuppression`/`TopK`
+  node in the graph) via `onnx`/`onnxruntime` inspection and a real forward pass. `N = 64² + 32² + 16² = 5376`
+  at imgsz 512.
 - **Severe class imbalance against France.** The France domain-adaptation chips substantially outnumber OAM
   chips in early builds of the dataset; recall on OAM/target-domain imagery was measured far below France
   recall in early training runs. Oversampling OAM chips in training and growing OAM coverage (more
@@ -56,6 +59,13 @@ plus a France BD ORTHO/BD TOPO set used for domain adaptation, built by the `bri
 - **IoU 0.5 vs 0.3 gap.** Earlier evaluation runs showed detection boxes often land close to but not tightly
   on the true bridge footprint (an OSM geometry offset, not purely a detection failure) - recall roughly
   doubles between IoU 0.5 and IoU 0.3 matching.
+- **The ZenML steps (`split_dataset`, `train_model`, `evaluate_model`, `export_onnx`) are not exercised by
+  this ticket.** CI for this pack's own `tests/` wasn't run here (no GPU/zenml/ultralytics/rasterio/geopandas
+  available in that session); what was verified is the shared, zenml-free `obb_utils.py` (confidence
+  filter, rotated NMS, the ONNX layout above) and the separate `pipeline/` tool's CI. The dataset-prep path
+  (`_obb_label_lines`/`_prepare_yolo_obb_dataset`) and the actual train/evaluate/export steps still need a
+  real run - e.g. via `just example yolo26s_obb_bridges` once this pack is in `hotosm/fAIr-models` - before
+  relying on them.
 
 ## Usage
 

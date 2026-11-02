@@ -20,9 +20,8 @@ from fair.utils.data import resolve_directory
 from fair.zenml.instrumentation import log_evaluation_results, mlflow_training_context
 from fair.zenml.materializers import CheckpointBytesMaterializer, ONNXMaterializer
 
-CLASS_NAME = "bridge"
-CLASS_VALUE = 0
-MODEL_IMGSZ = 512  # ONNX input side; fAIr's native chip is 256x256, resized up in preprocess/predict
+from .obb_utils import CLASS_NAME, CLASS_VALUE, MODEL_IMGSZ, obb_corners, postprocess, preprocess
+
 DEFAULT_BLOCK_SIZE = 4  # OAM-x-y-z tile blocks for the spatial split
 
 
@@ -215,82 +214,6 @@ def _resolve_yolo_dir_for_step(
 
 
 # ------------------------------------------------------------------ serving contract
-def preprocess(image_path: Any) -> Any:
-    """Contract hook for STAC `pre_processing_function`: one RGB chip as a normalised
-    (1, 3, MODEL_IMGSZ, MODEL_IMGSZ) float32 batch."""
-    import numpy as np
-    import rasterio
-    from PIL import Image
-
-    with rasterio.open(image_path) as src:
-        arr = src.read([1, 2, 3])
-    rgb = np.ascontiguousarray(np.transpose(arr, (1, 2, 0))).astype(np.uint8)
-    resized = Image.fromarray(rgb, mode="RGB").resize((MODEL_IMGSZ, MODEL_IMGSZ), Image.Resampling.BILINEAR)
-    return np.asarray(resized).transpose(2, 0, 1)[np.newaxis, ...].astype(np.float32) / 255.0
-
-
-def _obb_corners(det: dict[str, float]) -> list[tuple[float, float]]:
-    cx, cy, w, h, angle = det["cx"], det["cy"], det["w"], det["h"], det["angle"]
-    dx, dy = w / 2, h / 2
-    cos_a, sin_a = math.cos(angle), math.sin(angle)
-    return [(cx + lx * cos_a - ly * sin_a, cy + lx * sin_a + ly * cos_a) for lx, ly in ((-dx, -dy), (dx, -dy), (dx, dy), (-dx, dy))]
-
-
-def _rotated_nms(dets: list[dict[str, float]], iou_threshold: float) -> list[dict[str, float]]:
-    from shapely.geometry import Polygon
-
-    ordered = sorted(dets, key=lambda d: d["confidence"], reverse=True)
-    polys = [Polygon(_obb_corners(d)) for d in ordered]
-    keep: list[int] = []
-    for i, poly_i in enumerate(polys):
-        if not poly_i.is_valid or poly_i.area <= 0:
-            continue
-        if any(
-            (union := poly_i.area + polys[j].area - poly_i.intersection(polys[j]).area) > 0
-            and poly_i.intersection(polys[j]).area / union > iou_threshold
-            for j in keep
-        ):
-            continue
-        keep.append(i)
-    return [ordered[i] for i in keep]
-
-
-def postprocess(raw_output: Any, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Raw YOLO26-OBB ONNX output -> detections (cx, cy, w, h, angle radians, confidence) in model-input
-    pixel space (confidence filter + rotated NMS; no CRS involved).
-
-    Assumes the standard Ultralytics OBB export layout for a one-class model: one tensor shaped (1, 6, N) -
-    4 box channels already decoded to real cx/cy/w/h in input-pixel units, 1 class score (post-sigmoid),
-    1 angle in radians. **Not yet confirmed against a real YOLO26s-OBB ONNX export** - see the README's
-    "Known limitations". Check `session.get_outputs()[0].shape` against a real export and adjust this
-    function if the layout differs.
-    """
-    import numpy as np
-
-    arr = np.asarray(raw_output)
-    if arr.ndim == 2:
-        arr = arr[np.newaxis, ...]
-    if arr.shape[1] <= arr.shape[2]:  # (batch, channels, N) -> (batch, N, channels)
-        arr = np.transpose(arr, (0, 2, 1))
-    rows = arr[0]
-    if rows.shape[-1] < 6:
-        return []
-
-    params = params or {}
-    conf_threshold = float(params.get("confidence_threshold", 0.25))
-    iou_threshold = float(params.get("iou_threshold", 0.45))
-
-    cx, cy, w, h, score, angle = (rows[:, i] for i in range(6))
-    keep = score >= conf_threshold
-    if not keep.any():
-        return []
-    dets = [
-        {"cx": float(cx[i]), "cy": float(cy[i]), "w": float(w[i]), "h": float(h[i]), "angle": float(angle[i]), "confidence": float(score[i])}
-        for i in np.nonzero(keep)[0]
-    ]
-    return _rotated_nms(dets, iou_threshold)
-
-
 def predict(session: Any, input_images: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
     """Module-level serving entrypoint for `fair.serve.base`. ONNX Runtime + rasterio/pyproj/shapely/PIL
     only - no torch, no ultralytics, so this runs in the distroless inference image."""
@@ -327,7 +250,7 @@ def predict(session: Any, input_images: dict[str, str], params: dict[str, Any]) 
         sx, sy = width / MODEL_IMGSZ, height / MODEL_IMGSZ
         to_wgs84 = Transformer.from_crs(crs, "EPSG:4326", always_xy=True) if crs is not None else None
         for det in detections:
-            native = [(px * sx, py * sy) for px, py in _obb_corners(det)]
+            native = [(px * sx, py * sy) for px, py in obb_corners(det)]
             geo = [transform * (px, py) for px, py in native]
             lonlat = [to_wgs84.transform(x, y) for x, y in geo] if to_wgs84 is not None else geo
             polygon = orient(Polygon([*lonlat, lonlat[0]]))
