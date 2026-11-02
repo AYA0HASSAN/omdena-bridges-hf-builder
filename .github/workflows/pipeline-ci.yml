@@ -91,10 +91,11 @@ jobs:
         run: pytest pipeline/tests -m "not slow" -q
       - name: Install fair-py-ops (needed by the model-pack mirror's serving path)
         run: pip install fair-py-ops
-      - name: Run model-pack serving-path tests (A, B)
+      - name: Run model-pack serving-path and spatial-split tests
         # --noconftest: tests/conftest.py (shared with test_steps.py) imports rasterio at module
-        # level, which this lightweight job doesn't install; A and B use no fixtures from it.
+        # level, which this lightweight job doesn't install; none of these three files need it.
         run: |
           pytest --noconftest \
                  models/yolo26s_obb_bridges/tests/test_dockerfile_copies_package.py \
-                 models/yolo26s_obb_bridges/tests/test_serving_imports.py -v
+                 models/yolo26s_obb_bridges/tests/test_serving_imports.py \
+                 models/yolo26s_obb_bridges/tests/test_spatial_split.py -v

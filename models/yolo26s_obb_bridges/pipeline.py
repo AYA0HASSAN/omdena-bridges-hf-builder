@@ -58,40 +58,197 @@ def _restore_checkpoint(trained_model: Any) -> Any:
 
 
 # ------------------------------------------------------------------ dataset prep (GeoJSON -> YOLO-OBB)
-def _chip_tile_xyz(name: str) -> tuple[int, int, int] | None:
-    m = re.match(r"OAM-(\d+)-(\d+)-(\d+)", name)
-    return tuple(int(v) for v in m.groups()) if m else None  # type: ignore[return-value]
+DEFAULT_SPLIT_REF_ZOOM = 14  # ~2.4 km blocks; used when matched tiles span more than one zoom
+MAX_REF_ZOOM_SPAN = 6  # cap on (split_ref_zoom - tile zoom): the block fan-out grows as 4**span
+MIN_TILE_ZOOM, MAX_TILE_ZOOM = 0, 24
+
+_OAM_XYZ_RE = re.compile(r"^OAM-([+-]?\d+)-([+-]?\d+)-([+-]?\d+)")
+
+
+def _parse_oam_xyz(name: str) -> tuple[int, int, int] | None:
+    """Parse the leading `OAM-x-y-z` slippy-map tile address out of a chip file name.
+
+    Returns `None` for names that don't start with `OAM-` at all - those aren't using this convention
+    and fall back to a plain random split. Raises `ValueError` (naming the file) for names that start
+    with `OAM-` but have a malformed, missing or out-of-range x/y/z, since those are upstream data bugs
+    rather than an intentionally different naming scheme (ticket [BRIDGES-XX], agent feedback #858 -
+    mixed-zoom split leakage).
+    """
+    if not name.startswith("OAM-"):
+        return None
+    m = _OAM_XYZ_RE.match(name)
+    if m is None:
+        raise ValueError(f"{name}: expected OAM-x-y-z with three integers, e.g. OAM-100-200-18.tif")
+    x, y, z = (int(v) for v in m.groups())
+    if not (MIN_TILE_ZOOM <= z <= MAX_TILE_ZOOM):
+        raise ValueError(f"{name}: zoom {z} is outside the valid range [{MIN_TILE_ZOOM}, {MAX_TILE_ZOOM}]")
+    if not (0 <= x < 2**z) or not (0 <= y < 2**z):
+        raise ValueError(f"{name}: tile ({x}, {y}) is out of range for zoom {z} (0 <= x, y < {2**z})")
+    return x, y, z
+
+
+def _ref_zoom_blocks(x: int, y: int, z: int, ref_zoom: int) -> list[tuple[int, int]]:
+    """The reference-zoom (`ref_zoom`) block(s) one OAM-x-y-z tile covers.
+
+    A tile at or finer than `ref_zoom` covers exactly one coarser block (shift right); a tile coarser
+    than `ref_zoom` covers every finer block inside its own footprint (shift left, then enumerate the
+    square). `MAX_REF_ZOOM_SPAN` bounds how much coarser a tile may be than `ref_zoom`, since the block
+    count grows as `4 ** (ref_zoom - z)`.
+    """
+    if z >= ref_zoom:
+        d = z - ref_zoom
+        return [(x >> d, y >> d)]
+    d = ref_zoom - z
+    if d > MAX_REF_ZOOM_SPAN:
+        raise ValueError(
+            f"tile zoom {z} is {d} levels coarser than split_ref_zoom={ref_zoom} (max "
+            f"{MAX_REF_ZOOM_SPAN}); raise block_size/split_ref_zoom or exclude this tile"
+        )
+    bx0, by0, span = x << d, y << d, 1 << d
+    return [(bx0 + dx, by0 + dy) for dx in range(span) for dy in range(span)]
+
+
+class _UnionFind:
+    """Minimal union-find over reference-zoom block keys, used to group OAM tiles whose footprints
+    overlap into one spatial component - so a tile and any of its ancestors/descendants always end up
+    in the same group, and therefore the same split."""
+
+    def __init__(self) -> None:
+        self._parent: dict[tuple[int, int], tuple[int, int]] = {}
+
+    def find(self, key: tuple[int, int]) -> tuple[int, int]:
+        self._parent.setdefault(key, key)
+        root = key
+        while self._parent[root] != root:
+            root = self._parent[root]
+        while self._parent[key] != root:
+            self._parent[key], key = root, self._parent[key]
+        return root
+
+    def union(self, a: tuple[int, int], b: tuple[int, int]) -> None:
+        root_a, root_b = self.find(a), self.find(b)
+        if root_a == root_b:
+            return
+        if root_b < root_a:  # deterministic regardless of call order: the smaller root always wins
+            root_a, root_b = root_b, root_a
+        self._parent[root_b] = root_a
+
+
+def _resolve_ref_zoom(explicit_ref_zoom: int | None, block_size: int, zooms: set[int]) -> int:
+    """Pick the reference zoom (REF_Z) spatial grouping is done at.
+
+    An explicit `split_ref_zoom` always wins. Otherwise, if every matched tile shares one zoom z0 (the
+    common case for a single dataset), `REF_Z = z0 - log2(block_size)` reproduces the legacy
+    `(x // block_size, y // block_size)` grouping exactly - e.g. block_size=16 at z18 gives REF_Z=14.
+    Mixed-zoom tile sets (the actual bug this guards against) have no single z0 to derive from, so they
+    default to `DEFAULT_SPLIT_REF_ZOOM`.
+    """
+    if explicit_ref_zoom is not None:
+        return explicit_ref_zoom
+    if len(zooms) == 1:
+        if block_size <= 0 or block_size & (block_size - 1) != 0:
+            raise ValueError(f"block_size must be a positive power of 2 to derive split_ref_zoom, got {block_size}")
+        (z0,) = zooms
+        return z0 - (block_size.bit_length() - 1)
+    return DEFAULT_SPLIT_REF_ZOOM
+
+
+def _assert_no_cross_split_overlap(names: list[str], split_of_name: dict[str, str], ref_zoom: int) -> None:
+    """Re-derive every matched tile's reference-zoom blocks from scratch and fail loudly if any block
+    ends up claimed by more than one split - the exact failure mode of the original bug, where a parent
+    and child tile of the same place could land in different splits. Independent of
+    `_spatial_split_names`'s own bookkeeping, so a future refactor can't silently break the guarantee.
+    """
+    block_owner: dict[tuple[int, int], tuple[str, str]] = {}
+    for name in names:
+        xyz = _parse_oam_xyz(name)
+        if xyz is None:
+            continue
+        x, y, z = xyz
+        split = split_of_name[name]
+        for block in _ref_zoom_blocks(x, y, z, ref_zoom):
+            prior = block_owner.get(block)
+            if prior is not None and prior[1] != split:
+                raise AssertionError(
+                    f"split leakage: REF_Z block {block} (zoom {ref_zoom}) is in both splits - "
+                    f"'{prior[0]}' ({prior[1]}) and '{name}' ({split})"
+                )
+            block_owner.setdefault(block, (name, split))
 
 
 def _spatial_split_names(
-    chip_names: list[str], val_ratio: float, seed: int, block_size: int
-) -> tuple[list[str], list[str]]:
-    """OAM-x-y-z names: whole (x // block_size, y // block_size) blocks go to train or val by a seeded
-    shuffle. Names that don't match the OAM pattern fall back to a seeded random split."""
-    blocks: dict[tuple[int, int], list[str]] = {}
+    chip_names: list[str],
+    val_ratio: float,
+    seed: int,
+    block_size: int,
+    ref_zoom: int | None = None,
+) -> tuple[list[str], list[str], int]:
+    """Split OAM-x-y-z named chips into train/val by whole spatial groups, never splitting a group
+    across train and val.
+
+    Every tile is mapped to the reference-zoom (REF_Z) block(s) it covers (`_ref_zoom_blocks`); two
+    tiles whose footprints share a REF_Z block - e.g. a parent tile and any of its descendants at a
+    finer zoom - are unioned into one group via `_UnionFind`, and the whole group goes to train or val
+    together. The pre-fix behaviour grouped tiles by their own raw `(x // block_size, y // block_size)`,
+    ignoring zoom entirely, so a parent and child tile of the same place could land in different splits
+    whenever their un-scaled x/y happened to fall in different raw blocks - leaking val into train
+    (ticket [BRIDGES-XX], agent feedback #858).
+
+    Group-to-split assignment is a seeded shuffle of the groups' sorted keys (each group's own minimum
+    block, so the result never depends on input order); this exactly mirrors the legacy per-block
+    shuffle when REF_Z is derived to match `block_size` for a single-zoom dataset (`_resolve_ref_zoom`).
+
+    Names that don't start with `OAM-` fall back to their own seeded random split, as before. Returns
+    `(train_names, val_names, resolved_ref_zoom)` so callers can log/reuse the zoom actually used.
+    """
+    matched: dict[str, tuple[int, int, int]] = {}
     unmatched: list[str] = []
     for name in chip_names:
-        xyz = _chip_tile_xyz(name)
+        xyz = _parse_oam_xyz(name)
         if xyz is None:
             unmatched.append(name)
-            continue
-        x, y, _z = xyz
-        blocks.setdefault((x // block_size, y // block_size), []).append(name)
+        else:
+            matched[name] = xyz
 
-    block_keys = sorted(blocks)
-    random.Random(seed).shuffle(block_keys)
-    val_block_count = max(1, round(len(block_keys) * val_ratio)) if block_keys and val_ratio > 0 else 0
-    val_blocks = set(block_keys[:val_block_count])
+    train_names: list[str] = []
+    val_names: list[str] = []
+    resolved_ref_zoom = ref_zoom if ref_zoom is not None else DEFAULT_SPLIT_REF_ZOOM
 
-    train_names = [n for key, names in blocks.items() if key not in val_blocks for n in names]
-    val_names = [n for key, names in blocks.items() if key in val_blocks for n in names]
+    if matched:
+        resolved_ref_zoom = _resolve_ref_zoom(ref_zoom, block_size, {z for _, _, z in matched.values()})
+
+        uf = _UnionFind()
+        name_blocks: dict[str, list[tuple[int, int]]] = {}
+        for name, (x, y, z) in matched.items():
+            blocks = _ref_zoom_blocks(x, y, z, resolved_ref_zoom)
+            name_blocks[name] = blocks
+            first = blocks[0]
+            uf.find(first)
+            for block in blocks[1:]:
+                uf.union(first, block)
+
+        groups: dict[tuple[int, int], list[str]] = {}
+        for name, blocks in name_blocks.items():
+            groups.setdefault(uf.find(blocks[0]), []).append(name)
+
+        group_keys = sorted(groups)
+        shuffled_groups = list(group_keys)
+        random.Random(seed).shuffle(shuffled_groups)
+        val_group_count = max(1, round(len(shuffled_groups) * val_ratio)) if shuffled_groups and val_ratio > 0 else 0
+        val_groups = set(shuffled_groups[:val_group_count])
+
+        train_names = [n for key, names_ in groups.items() if key not in val_groups for n in names_]
+        val_names = [n for key, names_ in groups.items() if key in val_groups for n in names_]
+
+        split_of_name = {n: "train" for n in train_names} | {n: "val" for n in val_names}
+        _assert_no_cross_split_overlap(list(matched), split_of_name, resolved_ref_zoom)
 
     shuffled_unmatched = sorted(unmatched)
     random.Random(seed).shuffle(shuffled_unmatched)
     val_unmatched_count = round(len(shuffled_unmatched) * val_ratio)
-    val_names += shuffled_unmatched[:val_unmatched_count]
-    train_names += shuffled_unmatched[val_unmatched_count:]
-    return sorted(train_names), sorted(val_names)
+    val_names = val_names + shuffled_unmatched[:val_unmatched_count]
+    train_names = train_names + shuffled_unmatched[val_unmatched_count:]
+    return sorted(train_names), sorted(val_names), resolved_ref_zoom
 
 
 def _obb_label_lines(chip_path: Path, labels_gdf: Any) -> list[str]:
@@ -147,8 +304,9 @@ def _prepare_yolo_obb_dataset(
     val_ratio: float,
     seed: int,
     block_size: int,
+    ref_zoom: int | None = None,
     out_dir: str | Path | None = None,
-) -> tuple[Path, dict[str, dict[str, int]]]:
+) -> tuple[Path, dict[str, dict[str, int]], int]:
     import geopandas as gpd
     import pandas as pd
 
@@ -168,7 +326,9 @@ def _prepare_yolo_obb_dataset(
         labels_gdf = labels_gdf.set_crs("EPSG:4326")
 
     by_name = {p.name: p for p in chip_paths}
-    train_names, val_names = _spatial_split_names(list(by_name), val_ratio, seed, block_size)
+    train_names, val_names, resolved_ref_zoom = _spatial_split_names(
+        list(by_name), val_ratio, seed, block_size, ref_zoom
+    )
 
     out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="yolo_obb_dataset_"))
     counts: dict[str, dict[str, int]] = {}
@@ -189,7 +349,7 @@ def _prepare_yolo_obb_dataset(
     (out / "data.yaml").write_text(
         f"path: {out.resolve()}\ntrain: images/train\nval: images/val\nnames:\n  0: {CLASS_NAME}\n"
     )
-    return out, counts
+    return out, counts, resolved_ref_zoom
 
 
 def _resolve_yolo_dir_for_step(
@@ -205,12 +365,13 @@ def _resolve_yolo_dir_for_step(
 
     chips_dir = resolve_directory(dataset_chips[IMAGE_INPUT], "*.tif*")
     labels_dir = resolve_directory(dataset_labels, "*.geojson")
-    yolo_dir, _ = _prepare_yolo_obb_dataset(
+    yolo_dir, _, _ = _prepare_yolo_obb_dataset(
         chips_dir,
         labels_dir,
         split_info["val_ratio"],
         split_info["seed"],
         split_info.get("block_size", DEFAULT_BLOCK_SIZE),
+        split_info.get("split_ref_zoom"),
         out_dir=yolo_dir,
     )
     return yolo_dir
@@ -226,24 +387,37 @@ def split_dataset(
     val_ratio = hyperparameters.get("val_ratio", 0.2)
     seed = hyperparameters.get("split_seed", 42)
     block_size = hyperparameters.get("block_size", DEFAULT_BLOCK_SIZE)
+    ref_zoom = hyperparameters.get("split_ref_zoom")
 
     chips_dir = resolve_directory(dataset_chips[IMAGE_INPUT], "*.tif*")
     labels_dir = resolve_directory(dataset_labels, "*.geojson")
-    yolo_dir, counts = _prepare_yolo_obb_dataset(chips_dir, labels_dir, val_ratio, seed, block_size)
+    yolo_dir, counts, resolved_ref_zoom = _prepare_yolo_obb_dataset(
+        chips_dir, labels_dir, val_ratio, seed, block_size, ref_zoom
+    )
+
+    # Independent re-check against the actual files written to disk (not _spatial_split_names's own
+    # bookkeeping), so a future refactor of the dataset-prep path can't silently reintroduce split
+    # leakage without CI catching it (ticket [BRIDGES-XX], agent feedback #858).
+    split_of_name = {
+        img.name: split for split in ("train", "val") for img in (yolo_dir / "images" / split).glob("*.png")
+    }
+    _assert_no_cross_split_overlap(list(split_of_name), split_of_name, resolved_ref_zoom)
 
     split_info = {
         "strategy": "spatial_block_oam_xyz",
         "val_ratio": val_ratio,
         "seed": seed,
         "block_size": block_size,
+        "split_ref_zoom": resolved_ref_zoom,
         "train_count": counts["train"]["chips"],
         "val_count": counts["val"]["chips"],
         "train_positive": counts["train"]["positive"],
         "val_positive": counts["val"]["positive"],
         "description": (
-            "Chips named OAM-x-y-z are grouped into (x // block_size, y // block_size) blocks; whole "
-            "blocks go to train or val by a seeded shuffle. Names that don't match that pattern fall back "
-            "to a seeded random split."
+            "Chips named OAM-x-y-z are grouped by the reference-zoom (split_ref_zoom) block(s) they "
+            "cover; a tile and any ancestor/descendant tile of the same place share a block and so "
+            "always land in the same split. Whole groups go to train or val by a seeded shuffle. Names "
+            "that don't start with OAM- fall back to a seeded random split."
         ),
         "_yolo_dir": str(yolo_dir),
     }

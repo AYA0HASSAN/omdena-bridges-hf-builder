@@ -21,9 +21,11 @@ corners of the rotated box) with a confidence score and an `angle` property.
   inference image).
 - **Accelerator**: the training/runtime image ships CUDA Torch and uses a GPU when one is visible, otherwise
   CPU. Live inference stays on CPU ONNX Runtime.
-- **Dataset prep**: chips named `OAM-x-y-z` are split into train/val by whole `(x // block_size, y // block_size)`
-  tile blocks (a seeded shuffle); other filenames fall back to a seeded random split. Label polygons are
-  clipped to each chip and converted to YOLO-OBB lines via their minimum rotated rectangle.
+- **Dataset prep**: chips named `OAM-x-y-z` are split into train/val by whole spatial groups at a reference
+  zoom (`split_ref_zoom`, default derived from `block_size`), never splitting a group across train and val -
+  a parent tile and any of its ancestors/descendants at a different zoom always land together (a seeded
+  shuffle picks which groups go to val). Other filenames fall back to a seeded random split. Label polygons
+  are clipped to each chip and converted to YOLO-OBB lines via their minimum rotated rectangle.
 
 ## Pretrained source
 
@@ -85,6 +87,12 @@ plus a France BD ORTHO/BD TOPO set used for domain adaptation, built by the `bri
   at module load, and `fair/utils/model_validator.py`'s AST check requires those decorators to live in that
   exact file - so `tests/test_serving_imports.py::test_pipeline_module_imports_without_zenml` is an expected,
   `strict` `xfail`, not a bug.
+- **The spatial split's reference-zoom blocks share edges, not a buffer.** `_spatial_split_names` (ticket
+  [BRIDGES-XX], agent feedback #858) guarantees a tile and its own ancestors/descendants never cross train/
+  val, but two *unrelated* tiles on either side of a reference-zoom block boundary can still end up as
+  geographic neighbours in different splits - the grouping has no spatial buffer. The bridges dataset
+  handles this elsewhere with a 1-chip buffer in `bridgebuild/finalize.py`; this pack's generic split does
+  not buffer yet. A follow-up could add one here if it turns out to matter for this model's metrics.
 
 ## Usage
 
