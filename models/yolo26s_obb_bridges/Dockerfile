@@ -95,12 +95,19 @@ COPY models/yolo26s_obb_bridges/serving.py /app/models/yolo26s_obb_bridges/servi
 COPY models/yolo26s_obb_bridges/pipeline.py /app/models/yolo26s_obb_bridges/pipeline.py
 
 # Inference stage: distroless live-serving runtime.
+#
+# fair-py-ops installs a `fair_zenml_patch.pth` that runs `import fair._patch_zenml` at *every*
+# Python interpreter startup via site.py - unconditionally, regardless of what any script imports -
+# to patch a ZenML server enum for Postgres support. That patch itself imports zenml, which is exactly
+# what pulled zenml into sys.modules even though serving.py never imports it (E2's actual failure
+# mode). It's irrelevant here: this container never talks to a ZenML server. FAIR_SKIP_ZENML_PATCH=1
+# is the patch's own documented escape hatch (see fair/_patch_zenml.py) for exactly this case.
 FROM gcr.io/distroless/python3-debian12:nonroot AS inference
 WORKDIR /app
 COPY --from=inference-builder /python /python
 COPY --from=inference-builder /app/.venv /app/.venv
 COPY --from=inference-builder /app/models /app/models
-ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app FAIR_SKIP_ZENML_PATCH=1
 EXPOSE 8080
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "uvicorn"]
 CMD ["fair.serve.base:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

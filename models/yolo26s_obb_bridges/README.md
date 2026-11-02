@@ -76,6 +76,11 @@ plus a France BD ORTHO/BD TOPO set used for domain adaptation, built by the `bri
   keeping the AGPL `ultralytics` dependency out of the served image. See the inference image size reported
   on the PR's `yolo26s-obb-bridges-image-hygiene` CI run, and the tracked follow-up issue proposing to move
   `zenml` behind a training-only extra in `fair-py-ops` so every model's inference image can drop it too.
+  Separately, `fair-py-ops` ships a `fair_zenml_patch.pth` that runs `import fair._patch_zenml` at *every*
+  interpreter startup (not just when something imports zenml) to patch a ZenML server enum for Postgres -
+  irrelevant to a pure ONNX-serving container, and it would otherwise import zenml into `sys.modules` on
+  its own regardless of what `serving.py` imports. The inference stage sets `FAIR_SKIP_ZENML_PATCH=1`
+  (the patch's own documented escape hatch) to disable it.
 - **`pipeline.py` can never be made zenml-free.** Its `@step`/`@pipeline` decorators need `zenml` importable
   at module load, and `fair/utils/model_validator.py`'s AST check requires those decorators to live in that
   exact file - so `tests/test_serving_imports.py::test_pipeline_module_imports_without_zenml` is an expected,

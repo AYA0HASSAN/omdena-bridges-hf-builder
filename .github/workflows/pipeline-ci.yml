@@ -92,6 +92,9 @@ jobs:
       - name: Install fair-py-ops (needed by the model-pack mirror's serving path)
         run: pip install fair-py-ops
       - name: Run model-pack serving-path tests (A, B)
+        # --noconftest: tests/conftest.py (shared with test_steps.py) imports rasterio at module
+        # level, which this lightweight job doesn't install; A and B use no fixtures from it.
         run: |
-          pytest models/yolo26s_obb_bridges/tests/test_dockerfile_copies_package.py \
+          pytest --noconftest \
+                 models/yolo26s_obb_bridges/tests/test_dockerfile_copies_package.py \
                  models/yolo26s_obb_bridges/tests/test_serving_imports.py -v
