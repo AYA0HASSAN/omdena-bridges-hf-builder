@@ -1,0 +1,201 @@
+{
+  "type": "Feature",
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://stac-extensions.github.io/mlm/v1.5.1/schema.json",
+    "https://stac-extensions.github.io/version/v1.2.0/schema.json",
+    "https://stac-extensions.github.io/classification/v2.0.0/schema.json",
+    "https://stac-extensions.github.io/file/v2.1.0/schema.json",
+    "https://stac-extensions.github.io/raster/v1.1.0/schema.json",
+    "https://stac-extensions.github.io/datacube/v2.2.0/schema.json",
+    "https://hotosm.github.io/fAIr-models/schemas/v1.0.0/base-model/schema.json"
+  ],
+  "id": "yolo26s-obb-bridges",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [-180, -90],
+        [180, -90],
+        [180, 90],
+        [-180, 90],
+        [-180, -90]
+      ]
+    ]
+  },
+  "bbox": [-180, -90, 180, 90],
+  "properties": {
+    "datetime": "2026-11-02T00:00:00Z",
+    "created": "2026-11-02T00:00:00Z",
+    "updated": "2026-11-02T00:00:00Z",
+    "title": "YOLO26s-OBB Bridge Detection",
+    "description": "YOLO26s oriented-bounding-box object detector for bridges (road and rail, pedestrian bridges excluded at training time) on VHR RGB OAM imagery. Finetuned from Ultralytics' DOTA-pretrained yolo26s-obb checkpoint on OAM+OSM chips across multiple Global South cities plus a France BD ORTHO/BD TOPO domain-adaptation set.",
+    "mlm:name": "yolo26s-obb-bridges",
+    "mlm:architecture": "YOLO26-OBB",
+    "mlm:tasks": ["object-detection"],
+    "mlm:framework": "PyTorch",
+    "mlm:framework_version": "2.10.0",
+    "mlm:pretrained": true,
+    "mlm:pretrained_source": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-obb.pt",
+    "mlm:accelerator": "cuda",
+    "mlm:accelerator_count": 1,
+    "fair:recommended_zoom": 18,
+    "keywords": ["bridge", "object-detection", "polygon"],
+    "license": "AGPL-3.0-only",
+    "version": "1",
+    "deprecated": false,
+    "providers": [
+      {
+        "name": "Ultralytics",
+        "roles": ["producer"],
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-obb.pt",
+        "description": "Upstream DOTA-pretrained YOLO26s-OBB weights"
+      }
+    ],
+    "fair:metrics_spec": [
+      { "key": "precision", "name": "Precision", "description": "Rotated-box detection precision across all classes on the val split, Ultralytics' own confidence sweep." },
+      { "key": "recall", "name": "Recall", "description": "Rotated-box detection recall across all classes on the val split." },
+      { "key": "map50", "name": "mAP50", "description": "Mean Average Precision at rotated IoU 0.50 on the val split." },
+      { "key": "map50_95", "name": "mAP50-95", "description": "Mean Average Precision averaged over rotated IoU 0.50:0.95 on the val split." }
+    ],
+    "mlm:input": [
+      {
+        "name": "image",
+        "bands": [{ "name": "red" }, { "name": "green" }, { "name": "blue" }],
+        "input": {
+          "shape": [-1, 3, 512, 512],
+          "dim_order": ["batch", "bands", "height", "width"],
+          "data_type": "float32"
+        },
+        "pre_processing_function": {
+          "format": "python",
+          "expression": "models.yolo26s_obb_bridges.pipeline:preprocess"
+        }
+      }
+    ],
+    "mlm:output": [
+      {
+        "name": "raw obb detections",
+        "tasks": ["object-detection"],
+        "result": {
+          "shape": [-1, 6, 5376],
+          "dim_order": ["batch", "channel", "anchor"],
+          "data_type": "float32"
+        },
+        "classification:classes": [
+          {
+            "name": "bridge",
+            "value": 0,
+            "description": "Rotated bounding box around a bridge deck"
+          }
+        ],
+        "post_processing_function": {
+          "format": "python",
+          "expression": "models.yolo26s_obb_bridges.pipeline:postprocess"
+        },
+        "bands": []
+      },
+      {
+        "name": "bridge detections",
+        "tasks": ["object-detection"],
+        "result": {
+          "shape": [-1, 3],
+          "dim_order": ["batch", "variables"],
+          "data_type": "float32"
+        },
+        "classification:classes": [
+          {
+            "name": "bridge",
+            "value": 0,
+            "description": "Rotated bounding box around a bridge deck"
+          }
+        ],
+        "bands": []
+      }
+    ],
+    "cube:dimensions": {
+      "features": { "type": "geometry", "bbox": [-180, -90, 180, 90], "geometry_types": ["Polygon"] }
+    },
+    "cube:variables": {
+      "class": { "dimensions": ["features"], "type": "data", "values": [0], "data_type": "uint8" },
+      "score": { "dimensions": ["features"], "type": "data", "extent": [0, 1], "data_type": "float32" },
+      "angle": { "dimensions": ["features"], "type": "data", "extent": [0, 360], "data_type": "float32" }
+    },
+    "mlm:hyperparameters": {
+      "training.epochs": 100,
+      "training.batch_size": 16,
+      "training.learning_rate": 0.01,
+      "training.val_ratio": 0.2,
+      "training.split_seed": 42,
+      "training.block_size": 4,
+      "inference.confidence_threshold": 0.25,
+      "inference.iou_threshold": 0.45
+    },
+    "fair:split_spec": {
+      "strategy": "spatial_block_oam_xyz",
+      "default_ratio": 0.2,
+      "seed": 42,
+      "block_size": 4,
+      "description": "Chips named OAM-x-y-z are grouped into (x // block_size, y // block_size) blocks; whole blocks go to train or val by a seeded shuffle. Names that don't match that pattern fall back to a seeded random split."
+    },
+    "fair:hyperparameters_spec": [
+      { "key": "epochs", "type": "int", "default": 100, "min": 1, "max": 500, "description": "Number of training epochs" },
+      { "key": "batch_size", "type": "int", "default": 16, "min": 1, "max": 128, "description": "Samples per training batch" },
+      { "key": "learning_rate", "type": "float", "default": 0.01, "min": 1e-07, "max": 1.0, "description": "Optimizer learning rate (lr0)" },
+      { "key": "val_ratio", "type": "float", "default": 0.2, "min": 0.05, "max": 0.5, "description": "Fraction of OAM tile blocks held out for validation" },
+      { "key": "split_seed", "type": "int", "default": 42, "min": 0, "max": 2147483647, "description": "Random seed for reproducible train/val split" },
+      { "key": "block_size", "type": "int", "default": 4, "min": 1, "max": 32, "description": "OAM tile-block size (in z-level tiles) used by the spatial split" },
+      { "key": "confidence_threshold", "type": "float", "default": 0.25, "min": 0.0, "max": 1.0, "description": "Minimum detection confidence score to retain a predicted bridge box at inference" },
+      { "key": "iou_threshold", "type": "float", "default": 0.45, "min": 0.0, "max": 1.0, "description": "Rotated IoU threshold for non-maximum suppression during inference" },
+      { "key": "chip_size", "type": "int", "default": 512, "min": 64, "max": 1280, "description": "Image chip size for training, export and inference" }
+    ]
+  },
+  "assets": {
+    "checkpoint": {
+      "href": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-obb.pt",
+      "title": "Pretrained weights (DOTA)",
+      "type": "application/octet-stream; framework=pytorch",
+      "roles": ["mlm:model", "mlm:weights"],
+      "mlm:artifact_type": "torch.save",
+      "raster:bands": [{ "name": "red" }, { "name": "green" }, { "name": "blue" }]
+    },
+    "source-code": {
+      "href": "https://github.com/hotosm/fAIr-models/tree/develop/models/yolo26s_obb_bridges",
+      "type": "text/html",
+      "roles": ["code"],
+      "mlm:entrypoint": "models.yolo26s_obb_bridges.pipeline:predict"
+    },
+    "mlm:training": {
+      "href": "ghcr.io/hotosm/fair-models/yolo26s_obb_bridges:dev",
+      "type": "application/vnd.oci.image.index.v1+json",
+      "title": "Training Docker Image",
+      "roles": ["mlm:training-runtime"]
+    },
+    "mlm:inference": {
+      "href": "ghcr.io/hotosm/fair-models/yolo26s_obb_bridges:dev-inference",
+      "type": "application/vnd.oci.image.index.v1+json",
+      "title": "Inference Docker Image",
+      "roles": ["mlm:inference-runtime"]
+    },
+    "readme": {
+      "href": "https://raw.githubusercontent.com/hotosm/fAIr-models/refs/heads/develop/models/yolo26s_obb_bridges/README.md",
+      "type": "text/markdown",
+      "roles": ["metadata"],
+      "title": "Model README"
+    }
+  },
+  "links": [
+    {
+      "rel": "license",
+      "href": "https://www.gnu.org/licenses/agpl-3.0.html",
+      "type": "text/html",
+      "title": "GNU Affero General Public License v3.0"
+    },
+    {
+      "rel": "cite-as",
+      "href": "https://docs.ultralytics.com/models/yolo26/",
+      "type": "text/html",
+      "title": "Ultralytics YOLO26"
+    }
+  ]
+}
