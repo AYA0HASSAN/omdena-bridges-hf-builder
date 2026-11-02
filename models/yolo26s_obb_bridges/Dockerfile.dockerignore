@@ -1,4 +1,5 @@
 *
+!models/__init__.py
 !models/yolo26s_obb_bridges/
 !models/conftest.py
 !models/test_integration.py
