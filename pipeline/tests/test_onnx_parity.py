@@ -12,16 +12,23 @@ import pytest
 
 
 def _nc1_model(tmp_path: Path):
-    """Ultralytics YOLO built from a copy of the stock yolo26n-obb.yaml with nc overridden to 1 -
-    random weights, no network access (the architecture yaml ships inside the ultralytics package)."""
-    import ultralytics
+    """Ultralytics YOLO, scale 'n', task obb, with nc overridden to 1 - random weights, no network
+    access.
+
+    There is no literal `yolo26n-obb.yaml` file in the package: ultralytics' own `yaml_model_load`
+    strips the scale letter, loads the base `cfg/models/26/yolo26-obb.yaml` (nc=80, a `scales:` dict
+    for n/s/m/l/x), and re-attaches `scale: "n"` from the originally requested name - verified by
+    reading ultralytics/nn/tasks.py's `yaml_model_load`/`guess_model_scale` in this exact installed
+    version. We call that same function, override `nc`, and dump the result back to a file named
+    the same way (`yolo26n-obb.yaml`) so `guess_model_scale` re-derives "n" correctly on reload.
+    """
     import yaml
     from ultralytics import YOLO
+    from ultralytics.nn.tasks import yaml_model_load
 
-    stock = next(Path(ultralytics.__file__).parent.rglob("yolo26n-obb.yaml"))
-    cfg = yaml.safe_load(stock.read_text())
+    cfg = yaml_model_load("yolo26n-obb.yaml")
     cfg["nc"] = 1
-    custom = tmp_path / "yolo26n-obb-nc1.yaml"
+    custom = tmp_path / "yolo26n-obb.yaml"
     custom.write_text(yaml.safe_dump(cfg))
     return YOLO(str(custom), task="obb")
 

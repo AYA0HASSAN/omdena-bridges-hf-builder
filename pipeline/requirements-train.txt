@@ -1,5 +1,8 @@
 # export + parity tests only; torch itself is installed separately (CPU wheel index) in CI
-ultralytics
+# ultralytics pinned to the version the real bridges-v0.onnx export was verified against (see
+# models/yolo26s_obb_bridges/README.md).
+ultralytics==8.4.197
 onnx
+onnxslim  # model.export(..., simplify=True) uses this; pinned here so it doesn't try to pip-install itself mid-test
 pyyaml
 huggingface_hub
