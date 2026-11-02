@@ -1,0 +1,16 @@
+name: pipeline-ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU torch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install pipeline dependencies
+        run: pip install -r pipeline/requirements.txt -r pipeline/requirements-train.txt pytest
+      - name: Run tests
+        run: pytest pipeline/tests -m "not slow" -q

@@ -1,0 +1,5 @@
+# export + parity tests only; torch itself is installed separately (CPU wheel index) in CI
+ultralytics
+onnx
+pyyaml
+huggingface_hub

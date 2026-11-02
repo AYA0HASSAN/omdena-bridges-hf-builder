@@ -1,0 +1,6 @@
+numpy
+shapely
+mercantile
+pyproj
+Pillow
+onnxruntime
