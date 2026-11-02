@@ -69,7 +69,7 @@
         },
         "pre_processing_function": {
           "format": "python",
-          "expression": "models.yolo26s_obb_bridges.pipeline:preprocess"
+          "expression": "models.yolo26s_obb_bridges.obb_utils:preprocess"
         }
       }
     ],
@@ -91,7 +91,7 @@
         ],
         "post_processing_function": {
           "format": "python",
-          "expression": "models.yolo26s_obb_bridges.pipeline:postprocess"
+          "expression": "models.yolo26s_obb_bridges.obb_utils:postprocess"
         },
         "bands": []
       },
@@ -159,11 +159,19 @@
       "mlm:artifact_type": "torch.save",
       "raster:bands": [{ "name": "red" }, { "name": "green" }, { "name": "blue" }]
     },
+    "model": {
+      "href": "https://huggingface.co/AyaHassan/fair-bridges-yolo/resolve/main/v0/bridges-v0.onnx",
+      "title": "Portable YOLO26s-OBB ONNX inference model (v0 baseline)",
+      "type": "application/octet-stream; framework=onnx",
+      "roles": ["mlm:model", "mlm:compiled"],
+      "mlm:artifact_type": "onnx",
+      "raster:bands": [{ "name": "red" }, { "name": "green" }, { "name": "blue" }]
+    },
     "source-code": {
       "href": "https://github.com/hotosm/fAIr-models/tree/develop/models/yolo26s_obb_bridges",
       "type": "text/html",
       "roles": ["code"],
-      "mlm:entrypoint": "models.yolo26s_obb_bridges.pipeline:predict"
+      "mlm:entrypoint": "models.yolo26s_obb_bridges.serving:predict"
     },
     "mlm:training": {
       "href": "ghcr.io/hotosm/fair-models/yolo26s_obb_bridges:dev",

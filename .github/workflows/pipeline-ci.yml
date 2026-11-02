@@ -1,6 +1,81 @@
 name: pipeline-ci
 on: [push, pull_request]
 jobs:
+  inference-image:
+    # [BRIDGES-XX], fixes feedback #858: builds the real inference image and proves, against that
+    # actual image (not just source), that ultralytics/torch are absent (E1), the serving path never
+    # imports zenml (E2), the container starts and serves /health (C), and a real /predict request
+    # returns a valid GeoJSON FeatureCollection (D). zenml being merely *installed* - a side effect of
+    # fair-py-ops bundling it unconditionally - is a documented, accepted gap (E3), not checked here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build inference image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: models/yolo26s_obb_bridges/Dockerfile
+          target: inference
+          load: true
+          tags: bridges-inference:ci
+
+      - name: E1 - ultralytics and torch are not installed in the inference image
+        run: |
+          docker run --rm --entrypoint /app/.venv/bin/python bridges-inference:ci -c "
+          import importlib.util as u
+          present = [m for m in ('ultralytics', 'torch') if u.find_spec(m)]
+          assert not present, f'should not be installed: {present}'
+          print('E1 ok: ultralytics/torch absent')
+          "
+
+      - name: E2 - the serving path does not import zenml
+        run: |
+          docker run --rm --entrypoint /app/.venv/bin/python bridges-inference:ci -c "
+          import sys
+          import models.yolo26s_obb_bridges.serving
+          assert 'zenml' not in sys.modules, 'serving module pulled zenml into sys.modules'
+          print('E2 ok: zenml not imported by the serving path')
+          "
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU torch + ultralytics (to build a tiny random-weight ONNX, not to run inference)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r pipeline/requirements-train.txt
+      - name: Build tiny nc=1 ONNX (random weights, imgsz=512 to match MODEL_IMGSZ)
+        run: python scripts/build_tiny_onnx.py --out ci-artifacts/tiny_nc1.onnx --imgsz 512
+
+      - name: C + D - start the real CMD, poll /health, then a real /predict request
+        run: |
+          python3 scripts/smoke_test_inference_image.py \
+            --image bridges-inference:ci \
+            --model-module models.yolo26s_obb_bridges.serving \
+            --model-uri /workspace/ci-artifacts/tiny_nc1.onnx \
+            --stac-item models/yolo26s_obb_bridges/stac-item.json \
+            --image-uri "https://tiles.openaerialmap.org/62d85d11d8499800053796c1/0/62d85d11d8499800053796c2/{z}/{x}/{y}" \
+            --bbox "85.5162048339844,27.6312238466813,85.5244445800781,27.6385236142719" \
+            --zoom 18 \
+            --container-name bridges-inference-smoke \
+            --output ci-artifacts/predictions.geojson
+
+      - name: Image size
+        run: |
+          docker image inspect bridges-inference:ci --format='Inference image size: {{.Size}} bytes'
+
+      - name: Upload prediction + tiny ONNX artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inference-image-hygiene-artifacts
+          path: |
+            ci-artifacts/predictions.geojson
+            ci-artifacts/tiny_nc1.onnx
+          if-no-files-found: ignore
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -14,3 +89,9 @@ jobs:
         run: pip install -r pipeline/requirements.txt -r pipeline/requirements-train.txt pytest
       - name: Run tests
         run: pytest pipeline/tests -m "not slow" -q
+      - name: Install fair-py-ops (needed by the model-pack mirror's serving path)
+        run: pip install fair-py-ops
+      - name: Run model-pack serving-path tests (A, B)
+        run: |
+          pytest models/yolo26s_obb_bridges/tests/test_dockerfile_copies_package.py \
+                 models/yolo26s_obb_bridges/tests/test_serving_imports.py -v

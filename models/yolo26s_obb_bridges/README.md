@@ -66,6 +66,20 @@ plus a France BD ORTHO/BD TOPO set used for domain adaptation, built by the `bri
   (`_obb_label_lines`/`_prepare_yolo_obb_dataset`) and the actual train/evaluate/export steps still need a
   real run - e.g. via `just example yolo26s_obb_bridges` once this pack is in `hotosm/fAIr-models` - before
   relying on them.
+- **`zenml` is still installed in the inference image (known gap, not a regression here).** The serving
+  entrypoint (`serving.py`, what the STAC item's `mlm:entrypoint` and the knative deployment actually run)
+  never *imports* zenml - that's enforced by `tests/test_serving_imports.py` and by the
+  `yolo26s-obb-bridges-image-hygiene` CI workflow running against the real built image. But `zenml==0.94.2`
+  is an unconditional dependency of `fair-py-ops` (not gated behind the `[serve]` extra), so it's still
+  physically present in the inference image's venv. `ultralytics`/`torch` are genuinely absent - they're
+  never installed in the `inference-builder` stage - which is what actually matters for image size and
+  keeping the AGPL `ultralytics` dependency out of the served image. See the inference image size reported
+  on the PR's `yolo26s-obb-bridges-image-hygiene` CI run, and the tracked follow-up issue proposing to move
+  `zenml` behind a training-only extra in `fair-py-ops` so every model's inference image can drop it too.
+- **`pipeline.py` can never be made zenml-free.** Its `@step`/`@pipeline` decorators need `zenml` importable
+  at module load, and `fair/utils/model_validator.py`'s AST check requires those decorators to live in that
+  exact file - so `tests/test_serving_imports.py::test_pipeline_module_imports_without_zenml` is an expected,
+  `strict` `xfail`, not a bug.
 
 ## Usage
 

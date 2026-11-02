@@ -51,6 +51,27 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system "fair-py-ops[test]==${FAIR_PY_OPS_VERSION}"
 
 # Inference builder: distroless-ready CPU venv (ONNX serving, no torch/ultralytics).
+#
+# The whole serving package - both __init__.py files, obb_utils.py, serving.py and pipeline.py - is
+# copied below, not just pipeline.py: pipeline.py does `from .obb_utils import ...` and
+# `from .serving import predict`, so a partial copy leaves the container unable to import it at start
+# (ticket [BRIDGES-XX], agent feedback #858). pipeline.py stays in the image because
+# .github/workflows/build-model-images.yml's smoke test imports `models.<name>.pipeline` generically
+# across every model pack; it re-exports `predict` from `serving.py` rather than defining it, so that
+# import still resolves.
+#
+# `serving.py` is the module that actually matters for isolation: it has no `zenml` import at all, so
+# `MODEL_MODULE=models.yolo26s_obb_bridges.serving` (what the STAC item's `mlm:entrypoint` - and hence
+# the real knative deployment - points at) imports cleanly without ever touching zenml. `pipeline.py`
+# can't offer that guarantee: its `@step`/`@pipeline` decorators need `zenml` importable at module load,
+# and fair/utils/model_validator.py's AST check requires those decorators to live in pipeline.py, so
+# that file will always pull zenml in regardless of what gets copied here.
+#
+# `zenml` ends up installed in this venv either way, because it's an unconditional dependency of
+# fair-py-ops (not gated behind the `[serve]` extra) - see "Known limitations" in README.md and the
+# hotosm/fAIr-models follow-up issue proposing to move it behind a training extra. ultralytics/torch are
+# genuinely absent (never installed here), which is what actually matters for image size and the AGPL
+# ultralytics dependency not leaking into the served image.
 FROM ghcr.io/astral-sh/uv:0.11.8-trixie-slim AS inference-builder
 ENV UV_PYTHON_INSTALL_DIR=/python UV_PYTHON_PREFERENCE=only-managed
 ARG FAIR_PY_OPS_VERSION=0.3.17
@@ -67,6 +88,10 @@ RUN --mount=type=cache,target=/python/.cache/uv \
     shapely==2.1.2 \
     numpy==2.5.2 \
     Pillow==12.3.0
+COPY models/__init__.py /app/models/__init__.py
+COPY models/yolo26s_obb_bridges/__init__.py /app/models/yolo26s_obb_bridges/__init__.py
+COPY models/yolo26s_obb_bridges/obb_utils.py /app/models/yolo26s_obb_bridges/obb_utils.py
+COPY models/yolo26s_obb_bridges/serving.py /app/models/yolo26s_obb_bridges/serving.py
 COPY models/yolo26s_obb_bridges/pipeline.py /app/models/yolo26s_obb_bridges/pipeline.py
 
 # Inference stage: distroless live-serving runtime.
